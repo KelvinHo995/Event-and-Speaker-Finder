@@ -111,7 +111,6 @@ async def find_event_details(speaker_name: str, event_filter: str = None):
     site_restriction = " OR ".join([f"site:{d}" for d in TARGET_DOMAINS])
     search_term = f"({site_restriction}) \"{speaker_name}\""
 
-    # search_term = "firecrawl"
     print(f"DEBUG: Searching for: {search_term}")
 
     try:
@@ -137,11 +136,9 @@ async def find_event_details(speaker_name: str, event_filter: str = None):
         
         print(f"DEBUG: Starting batch scrape for {len(urls)} URLs")
         
-        # Get today's date for the prompt
         today = datetime.now().strftime('%B %d, %Y')
         
         try:
-            # Submit batch scrape job
             batch_results = await asyncio.to_thread(
                 app_firecrawl.batch_scrape,
                 urls=urls,
@@ -152,13 +149,10 @@ async def find_event_details(speaker_name: str, event_filter: str = None):
                 }],
             )
 
-            # Process results   
-            # if batch_results and hasattr(batch_results, 'data'):
             for result in batch_results.data:
                 try:
                     if result.json:
                         extracted_data = result.json
-                        print(extracted_data)
                         if extracted_data and 'upcoming_events' in extracted_data:
                             all_events.extend(extracted_data['upcoming_events'])
                             url = result.metadata.url if hasattr(result, 'metadata') and hasattr(result.metadata, 'url') else 'unknown'
@@ -166,20 +160,17 @@ async def find_event_details(speaker_name: str, event_filter: str = None):
                 except Exception as e:
                     print(f"ERROR: Failed to process batch result: {e}")
                     continue
+                
         except Exception as e:
             print(f"ERROR: Batch scrape failed: {e}")
         
-        # Filter out past events
         future_events = [event for event in all_events if is_future_event(event)]
         
-        # Remove duplicates
         unique_events = remove_duplicate_events(future_events)
         print(f"DEBUG: Total unique future events found: {len(unique_events)}")
         
-        # Filter by event type (in-person/online)
         filtered_events = filter_events_by_type(unique_events, event_filter)
         
-        # Sort by date
         filtered_events.sort(key=parse_event_date)
         print(f"DEBUG: Events sorted by date")
         
