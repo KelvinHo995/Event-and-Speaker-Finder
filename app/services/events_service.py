@@ -107,41 +107,88 @@ async def find_event_details(speaker_name: str, event_filter: str = None):
         speaker_name: Name of the speaker to search for
         event_filter: Optional filter - 'in-person' or 'online'
     """
-    # 1. Build Query: "(site:lu.ma OR ...) "Andrew Ng" speaking schedule"
-    site_restriction = " OR ".join([f"site:{d}" for d in TARGET_DOMAINS])
-    search_term = f"({site_restriction}) \"{speaker_name}\""
-
-    print(f"DEBUG: Searching for: {search_term}")
+    print(f"DEBUG: Running Hybrid Search for: {speaker_name}")
 
     try:
-        # Step A: Search for the speaker's schedule
-        search_result = await asyncio.to_thread(
+        # Step A: Define two search strategies
+        
+        # Strategy 1: Targeted Platform Search
+        # Search specifically on known event platforms
+        site_restriction = " OR ".join([f"site:{d}" for d in TARGET_DOMAINS])
+        query_targeted = f"({site_restriction}) \"{speaker_name}\""
+        
+        # Strategy 2: Broad Discovery Search
+        # Search everywhere else, excluding the known platforms
+        site_exclusion = " ".join([f"-site:{d}" for d in TARGET_DOMAINS])
+        query_broad = f"\"{speaker_name}\" speaker upcoming events {site_exclusion}"
+        
+        print(f"DEBUG: Targeted query: {query_targeted}")
+        print(f"DEBUG: Broad query: {query_broad}")
+        
+        # Step B: Run both searches in parallel
+        task_targeted = asyncio.to_thread(
             app_firecrawl.search,
-            query=search_term,
-            limit=5,
+            query=query_targeted,
+            limit=3,
         )
+        task_broad = asyncio.to_thread(
+            app_firecrawl.search,
+            query=query_broad,
+            limit=3,
+        )
+        
+        results_targeted, results_broad = await asyncio.gather(task_targeted, task_broad)
+        
+        # Step C: Combine and deduplicate URLs
+        def collect_urls(result_obj):
+            """Helper to safely extract URLs from search results"""
+            if not result_obj:
+                return []
             
-        if not search_result or not hasattr(search_result, 'web') or not search_result.web:
+            # Handle both dict and object responses
+            if hasattr(result_obj, 'web'):
+                web_results = result_obj.web
+            elif isinstance(result_obj, dict) and 'web' in result_obj:
+                web_results = result_obj['web']
+            else:
+                return []
+            
+            if not web_results:
+                return []
+            
+            # Extract URLs from results
+            urls = []
+            for item in web_results:
+                url = item.url if hasattr(item, 'url') else item.get('url') if isinstance(item, dict) else None
+                if url:
+                    urls.append(url)
+            return urls
+        
+        all_urls = []
+        all_urls.extend(collect_urls(results_targeted))
+        all_urls.extend(collect_urls(results_broad))
+        
+        # Remove duplicates while preserving order
+        unique_urls = list(dict.fromkeys(all_urls))
+        
+        print(f"DEBUG: Targeted search found: {len(collect_urls(results_targeted))} URLs")
+        print(f"DEBUG: Broad search found: {len(collect_urls(results_broad))} URLs")
+        print(f"DEBUG: Combined unique URLs: {len(unique_urls)}")
+        
+        if not unique_urls:
             return {"speaker_name": speaker_name, "upcoming_events": []}
         
-        results_list = search_result.web
-        if not results_list:
-            return {"speaker_name": speaker_name, "upcoming_events": []}
-        
-        print(f"DEBUG: Found {len(results_list)} web URLs")
-
-        # Step B: Batch scrape all web URLs to find events
+        # Step D: Batch scrape all unique URLs to find events
         all_events = []
-        urls = [result.url if hasattr(result, 'url') else result.get('url') for result in results_list]
         
-        print(f"DEBUG: Starting batch scrape for {len(urls)} URLs")
+        print(f"DEBUG: Starting batch scrape for {len(unique_urls)} URLs")
         
         today = datetime.now().strftime('%B %d, %Y')
         
         try:
             batch_results = await asyncio.to_thread(
                 app_firecrawl.batch_scrape,
-                urls=urls,
+                urls=unique_urls,
                 formats=[{
                     'type': "json",
                     'schema': SpeakerEventsResponse.model_json_schema(),
@@ -160,7 +207,7 @@ async def find_event_details(speaker_name: str, event_filter: str = None):
                 except Exception as e:
                     print(f"ERROR: Failed to process batch result: {e}")
                     continue
-                
+
         except Exception as e:
             print(f"ERROR: Batch scrape failed: {e}")
         
